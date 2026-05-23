@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+
+# Data
+dataset.csv
