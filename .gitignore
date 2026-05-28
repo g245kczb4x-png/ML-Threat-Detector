@@ -16,3 +16,4 @@ build/
 dataset.csvsiem/bert_security_model/
 siem/mitre_attack.json
 siem/test_engine.py
+siem/bert_security_model/
