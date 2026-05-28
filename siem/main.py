@@ -2,37 +2,38 @@ from fastapi import FastAPI, WebSocket, Request
 from .engine import ThreatClassifier
 import json
 
-app = FastAPI()
-model = ThreatClassifier()
+app   = FastAPI()
+model = ThreatClassifier(
+    bert_path="./bert_security_model",
+    mitre_path="./mitre_attack.json"
+)
 active_connections = []
 
 @app.post("/telemetry")
 async def receive_telemetry(request: Request):
-    data = await request.json()
+    data    = await request.json()
     command = data.get("command", "")
-    
-    # 1. Run Classification
-    tactic, confidence = model.predict_command(command)
-    
-    # 2. Prepare the Alert Payload for the Dashboard
+
+    result = model.analyze(command)
+
     alert = {
-        "timestamp": data.get("timestamp"),
-        "attacker_ip": data.get("attacker_ip"),
-        "command": command,
-        "tactic": tactic,
-        "confidence": confidence
+        "timestamp":    data.get("timestamp"),
+        "attacker_ip":  data.get("attacker_ip"),
+        "command":      command,
+        "verdict":      result["verdict"],
+        "tactic":       result["tactic"],
+        "technique_id": result["technique_id"],
+        "confidence":   int(result["confidence"] * 100),
+        "explanation":  result["explanation"],
+        "mitigations":  result["mitigations"],
     }
 
-    # 3. BROADCAST to Next.js Dashboard
     for connection in active_connections:
         await connection.send_text(json.dumps(alert))
 
-    # 4. ACTIVE DEFENSE LOGIC
-    # If the ML model is highly confident (e.g. > 85%), tell the agent to KILL
-    action = "ALLOW"
-    if confidence >= 85:
-        action = "BLOCK"
-        print(f"[!] CRITICAL THREAT DETECTED: {tactic} ({confidence}%). Sending Kill Signal.")
+    action = "BLOCK" if result["kill"] else "ALLOW"
+    if result["kill"]:
+        print(f"[!] CRITICAL THREAT: {result['tactic']} — {result['technique_id']} ({alert['confidence']}%) — KILL SIGNAL SENT")
 
     return {"status": "processed", "action": action}
 
