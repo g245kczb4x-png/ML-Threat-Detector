@@ -13,7 +13,6 @@ build/
 .DS_Store
 
 # Data
-dataset.csvsiem/bert_security_model/
+dataset.csv
+siem/model/securebert/
 siem/mitre_attack.json
-siem/test_engine.py
-siem/bert_security_model/

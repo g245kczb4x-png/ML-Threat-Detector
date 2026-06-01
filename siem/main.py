@@ -21,9 +21,11 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
 
 try:
-    from .engine import COMMAND_TO_TECHNIQUE, ThreatClassifier
+    from .engine import COMMAND_TO_TECHNIQUE, load_mitre_playbook, build_mitre_index, explain_command
+    from .model.classifier import classify, get_session_embedding
 except ImportError:
-    from engine import COMMAND_TO_TECHNIQUE, ThreatClassifier
+    from engine import COMMAND_TO_TECHNIQUE, load_mitre_playbook, build_mitre_index, explain_command
+    from model.classifier import classify, get_session_embedding
 
 # ── App setup ─────────────────────────────────────────────────────────────────
 app   = FastAPI()
@@ -34,10 +36,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-model = ThreatClassifier(
-    bert_path  = "./bert_security_model",
-    mitre_path = "./mitre_attack.json"
-)
+mitre_index = build_mitre_index(load_mitre_playbook("./mitre_attack.json"))
 
 active_connections = []
 
@@ -201,7 +200,7 @@ def update_session(ip: str, alert: dict) -> dict:
     })
 
     if malicious_count >= INTRUSION_THRESHOLD:
-        embedding = model.get_session_embedding(session["commands"])
+        embedding = get_session_embedding(session["commands"])
         embedding_store.append({
             "ip":        ip,
             "embedding": embedding,
@@ -224,18 +223,32 @@ async def receive_telemetry(request: Request):
     command = data.get("command", "")
     ip      = data.get("attacker_ip", "unknown")
 
-    result  = model.analyze(command)
+    result     = classify(command)
+    tactic     = result["tactic"]
+    confidence = result["confidence"]
+    kill       = confidence > 0.85 and tactic in (
+        "EXECUTION", "PRIVILEGE_ESCALATION", "CREDENTIAL_ACCESS"
+    )
+
+    explanation = "Command appears benign."
+    mitigations = []
+    technique_id = None
+    if tactic != "BENIGN":
+        _, technique_id, explanation, mitigations = explain_command(
+            command, mitre_index
+        )
 
     alert = {
         "timestamp":    data.get("timestamp"),
         "attacker_ip":  ip,
         "command":      command,
-        "verdict":      result["verdict"],
-        "tactic":       result["tactic"],
-        "technique_id": result["technique_id"],
-        "confidence":   int(result["confidence"] * 100),
-        "explanation":  result["explanation"],
-        "mitigations":  result["mitigations"],
+        "verdict":      "BENIGN" if tactic == "BENIGN" else "MALICIOUS",
+        "tactic":       tactic,
+        "technique_id": technique_id,
+        "confidence":   int(confidence * 100),
+        "explanation":  explanation,
+        "mitigations":  mitigations,
+        "kill":         kill,
     }
 
     session_info             = update_session(ip, alert)
@@ -251,9 +264,9 @@ async def receive_telemetry(request: Request):
     for connection in active_connections:
         await connection.send_text(json.dumps(alert))
 
-    action = "BLOCK" if result["kill"] else "ALLOW"
-    if result["kill"]:
-        print(f"[!] KILL: {result['tactic']} — {result['technique_id']} ({alert['confidence']}%)")
+    action = "BLOCK" if kill else "ALLOW"
+    if kill:
+        print(f"[!] KILL: {tactic} — {technique_id} ({int(confidence * 100)}%)")
 
     return {"status": "processed", "action": action, "alert": alert}
 

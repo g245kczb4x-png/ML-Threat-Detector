@@ -1,10 +1,7 @@
 import re
 import json
-import torch
 import requests
 import os
-import numpy as np
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 # ── MITRE ATT&CK Playbook ─────────────────────────────────────────────────────
 MITRE_URL = "https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json"
@@ -109,85 +106,3 @@ def explain_command(cmd: str, mitre_index: dict):
                 return tactic, technique_id, explanation, mitigations
     return "EXECUTION", None, "Suspicious command — manual review recommended.", []
 
-# ── Threat Classifier ─────────────────────────────────────────────────────────
-class ThreatClassifier:
-    def __init__(
-        self,
-        bert_path:  str = "./bert_security_model",
-        mitre_path: str = "./mitre_attack.json",
-        device:     str = None
-    ):
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-        model_dir = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), bert_path)
-        )
-        if not os.path.isdir(model_dir):
-            raise FileNotFoundError(
-                f"BERT model directory not found: {model_dir}"
-            )
-
-        # BERT classifier
-        self.bert_tok = AutoTokenizer.from_pretrained(model_dir)
-        self.bert_mod = AutoModelForSequenceClassification.from_pretrained(model_dir)
-        self.bert_mod.eval().to(self.device)
-
-        # MITRE
-        playbook         = load_mitre_playbook(mitre_path)
-        self.mitre_index = build_mitre_index(playbook)
-        print(f"[✓] BERT loaded. MITRE index: {len(self.mitre_index)} techniques.")
-
-    def predict_command(self, command: str):
-        result = self.analyze(command)
-        return result["tactic"], int(result["confidence"] * 100)
-
-    def analyze(self, command: str) -> dict:
-        inputs = self.bert_tok(
-            command, return_tensors="pt", truncation=True, max_length=128
-        ).to(self.device)
-        with torch.no_grad():
-            logits = self.bert_mod(**inputs).logits
-        pred       = logits.argmax(-1).item()
-        confidence = torch.softmax(logits, dim=-1).max().item()
-
-        if pred == 0:
-            return {
-                "verdict":      "BENIGN",
-                "tactic":       "BENIGN",
-                "technique_id": None,
-                "confidence":   confidence,
-                "explanation":  "Command appears benign.",
-                "mitigations":  [],
-                "kill":         False
-            }
-
-        tactic, technique_id, explanation, mitigations = explain_command(
-            command, self.mitre_index
-        )
-
-        return {
-            "verdict":      "MALICIOUS",
-            "tactic":       tactic,
-            "technique_id": technique_id,
-            "confidence":   confidence,
-            "explanation":  explanation,
-            "mitigations":  mitigations,
-            "kill":         confidence > 0.85
-        }
-
-    def get_command_embedding(self, cmd: str) -> np.ndarray:
-        """Returns 768-dim CLS token embedding for a command."""
-        inputs = self.bert_tok(
-            cmd, return_tensors="pt", truncation=True, max_length=128
-        ).to(self.device)
-        with torch.no_grad():
-            outputs     = self.bert_mod.bert(**inputs)
-            embedding   = outputs.last_hidden_state[:, 0, :].squeeze().cpu().numpy()
-        return embedding
-
-    def get_session_embedding(self, commands: list) -> np.ndarray:
-        """Averages command embeddings into a single 768-dim session embedding."""
-        if not commands:
-            return np.zeros(768)
-        embeddings = [self.get_command_embedding(cmd) for cmd in commands]
-        return np.mean(embeddings, axis=0)
